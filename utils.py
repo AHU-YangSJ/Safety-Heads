@@ -104,22 +104,6 @@ def get_hidden_states(model, tokenizer, full_prompt_list, hparams, is_accept=Tru
                 # padding=True,
             ).to(f"{model.device}")
 
-            # generation_config = GenerationConfig(
-            #     temperature=hparams.temperature,
-            #     top_p=hparams.top_p,
-            #     top_k=hparams.top_k,
-            #     pad_token_id=0
-
-            # )
-            # output = model.generate(
-            #     input_ids=inputs["input_ids"],
-            #     output_hidden_states= False,
-            #     generation_config=generation_config,
-            #     return_dict_in_generate=True,
-            #     # output_scores=True,
-            #     max_new_tokens=hparams.new_token_len,
-            #     num_return_sequences=1
-            # )
 
             output = model(**inputs)
 
@@ -138,12 +122,6 @@ def get_hidden_states(model, tokenizer, full_prompt_list, hparams, is_accept=Tru
     return act_outputs_list
 
 def ensure_numpy_float32(data):
-    """
-    数据预处理工具函数：
-    1. 处理 PyTorch Tensor -> Numpy 的转换
-    2. 处理 GPU -> CPU 的移动
-    3. 关键：将 float16/bfloat16 强制转换为 float32，避免统计计算时的数值溢出
-    """
     if isinstance(data, torch.Tensor):
         return data.detach().cpu().to(torch.float32).numpy()
     elif isinstance(data, np.ndarray):
@@ -180,11 +158,7 @@ def anchor_accept_point(
 ):
     random_select_num = hparams.random_select_num
     model_dir = reader_dir 
-    # if os.path.exists(f"{model_dir}/layers_mhead_dict.pt"):
-    #     print(f"Loading existing results from {model_dir}/layers_mhead_dict.pt")
-    #     all_layers_mhead_dict = torch.load(f"{model_dir}/layers_mhead_dict.pt")
-    # else:
-    #     all_layers_mhead_dict = None
+
     print("Getting hidden states for Benign samples...")
     all_layers_benign_mhead_outputs = get_hidden_states(model, tokenizer, dataset_benign, hparams, is_accept=True)
     print("Getting hidden states for Harmful samples...")
@@ -203,9 +177,6 @@ def anchor_accept_point(
     else:
         all_layers_benign_mhead_outputs, all_layers_harmful_mhead_outputs = \
             range_select_pair(all_layers_benign_mhead_outputs, random_select_num, hparams.select_seed[0])
-        
-
-    
     
     for layer in tqdm(range(hparams.v_loss_layer+1)):
         # (sample_num, num_heads, head_dim)
@@ -228,159 +199,4 @@ def anchor_accept_point(
     torch.save(layers_mhead_dict, f"{model_dir}/{hparams.pair_class}_layers_mhead_dict.pt")
     return layers_mhead_dict
 
-
-
-
-def anchor_accept_point_gate(
-    model, tokenizer, dataset_benign, dataset_harmful, hparams, neuron_dir
-):
-    layers_direction_delta = {}
-    model_dir = neuron_dir 
-    
-    if os.path.exists(f"{model_dir}/layers_actfn_dict.pt"):
-        print(f"Loading existing results from {model_dir}/layers_actfn_dict.pt")
-        all_layers_actfn_dict = torch.load(f"{model_dir}/layers_actfn_dict.pt")
-    else:
-        all_layers_actfn_dict = None
-
-    print("Getting hidden states for Benign samples...")
-    all_layers_benign_act_outputs = get_hidden_states(model, tokenizer, dataset_benign, hparams, is_accept=True)
-    print("Getting hidden states for Harmful samples...")
-    all_layers_harmful_act_outputs = get_hidden_states(model, tokenizer, dataset_harmful, hparams, is_accept=False)
-    print()
-    
-    layers_actfn_dict = {id:{"act_key":None, "act_value":None, "deact_key":None, "deact_value":None} for id in range(hparams.v_loss_layer+1)}
-
-    for layer in tqdm(range(hparams.v_loss_layer+1)):
-        harmful_outputs, benign_outputs = all_layers_harmful_act_outputs[layer], all_layers_benign_act_outputs[layer]
-        # 计算差值
-        diff = harmful_outputs - benign_outputs
-        neuron_k = int(diff.shape[-1]*hparams.neuron_ratio)
-
-        # 选择目标神经元
-        # ######################## 下一步尝试用PCA筛选神经元编号 ########################
-        if all_layers_actfn_dict is not None:
-            layer_act_index, layer_deact_index = all_layers_actfn_dict[layer]["act_key"].to(diff.device), all_layers_actfn_dict[layer]["deact_key"].to(diff.device)
-            # layer_act_neuron_index, layer_deact_neuron_index = loaded_act_index[layer], loaded_deact_index[layer]
-        else:   
-            # 排序差值，此处按照diff均值(1xd)排序，反映了神经元在样本间的整体变化趋势
-            # 此处排序时同时考虑了了激活和抑制两个方向，避免出现某些神经元在样本间同时存在激活和抑制，且抵触较大的情况
-            sorted_pca_act_diff, sorted_act_index = diff.mean(dim=0).sort(descending=True)
-            sorted_pca_deact_diff, sorted_deact_index = diff.mean(dim=0).sort(descending=False)
-
-            # pca = PCA(n_components=1)
-            # diff_np = ensure_numpy_float32(diff)
-            # pca_result = pca.fit_transform(diff_np.T)
-            # torch_pca_result = torch.from_numpy(pca_result).T.squeeze().to(torch.float16)
-            # # 根据PCA结果排序
-            # sorted_pca_act_diff, sorted_pca_act_index = torch_pca_result.sort(descending=True)
-            # sorted_pca_deact_diff, sorted_pca_deact_index = torch_pca_result.sort(descending=False)
-            # sorted_act_index, sorted_deact_index = sorted_pca_act_index, sorted_pca_deact_index
-            
-
-            # 前k个幅度最大的神经元
-            layer_act_index, layer_deact_index = sorted_act_index[0:neuron_k], sorted_deact_index[0:neuron_k]
-            # layers_act_neuron_index.append(layer_act_index.unsqueeze(0))
-            # layers_deact_neuron_index.append(layer_deact_index.unsqueeze(0))
-
-
-        # act和deact的diff符号与输出，此处按照原始diff值(nxd), 反映了神经元在每个样本上的具体变化情况
-        # 此处区分开激活和抑制，分别观察变化
-        act_neuron_signs, act_neuron_outputs = diff.sign().clamp(min=0), diff.clamp(min=0)
-        deact_neuron_signs, deact_neuron_outputs = diff.sign().clamp(max=0), diff.clamp(max=0)
-
-        ## 目标神经元 样本平均 激活/抑制 率
-        rate_act_signs = act_neuron_signs[:, layer_act_index].mean(dim=0)
-        rate_deact_signs = deact_neuron_signs[:, layer_deact_index].mean(dim=0)
-        ## 目标神经元 样本平均 激活/抑制 幅度 均值池化
-        mean_act_values = act_neuron_outputs[:, layer_act_index].mean(dim=0)
-        mean_deact_values = deact_neuron_outputs[:, layer_deact_index].mean(dim=0)
-
-        # mean_act_values = sorted_pca_act_diff[0:neuron_k]
-        # mean_deact_values = sorted_pca_deact_diff[0:neuron_k]
-
-    
-        # # 兴奋神经元 兴奋率和兴奋程度 绘图
-        # xmin, xmax = 0, max(0, int(rate_act_signs.numel() - 1))
-        # a_min, a_max = 0, 1.1
-        # plot_vector_line(
-        #     rate_act_signs, save_name=f"{model_dir}/{hparams.pair_class}/act_sign/layer{layer}_line.png",
-        #     xlim=[xmin, xmax], ylim=[a_min, a_max],
-        # )
-        # a_min, a_max = 0, 1 #act_output.abs().max().item()*1.1
-        # plot_vector_line(
-        #     mean_act_values.abs(), save_name=f"{model_dir}/{hparams.pair_class}/act_output/layer{layer}_line.png", 
-        #     xlim=[xmin, xmax], ylim=[a_min, a_max],
-        # )
-        # # 抑制神经元 抑制率和抑制程度 绘图
-        # xmin, xmax = 0, max(0, int(rate_deact_signs.numel() - 1))
-        # a_min, a_max = 0, 1.1
-        # plot_vector_line(
-        #     rate_deact_signs.abs(), save_name=f"{model_dir}/{hparams.pair_class}/deact_sign/layer{layer}_line.png",
-        #     xlim=[xmin, xmax], ylim=[a_min, a_max],
-        # )
-        # a_min, a_max = 0, 1 # deact_output.abs().max().item()*1.1
-        # plot_vector_line(
-        #     mean_deact_values.abs(), save_name=f"{model_dir}/{hparams.pair_class}/deact_output/layer{layer}_line.png", 
-        #     xlim=[xmin, xmax], ylim=[a_min, a_max],
-        # )
-        
-
-        layers_actfn_dict[layer]["act_key"] = layer_act_index.cuda()
-        layers_actfn_dict[layer]["act_value"] = mean_act_values.cuda()
-        layers_actfn_dict[layer]["deact_key"] = layer_deact_index.cuda()
-        layers_actfn_dict[layer]["deact_value"] = mean_deact_values.cuda()
-
-        # act_output_list.append(mean_act_values.unsqueeze(0))
-        # deact_output_list.append(mean_deact_values.unsqueeze(0))
-
-    if all_layers_actfn_dict is None:
-        torch.save(layers_actfn_dict, f"{model_dir}/layers_actfn_dict.pt")
-
-    print()
-    return layers_actfn_dict
-
-    for layer in tqdm(range(hparams.v_loss_layer+1)):
-        harmful_outputs, benign_outputs = all_layers_harmful_act_outputs[layer], all_layers_benign_act_outputs[layer]
-        # --- Analysis & Selection ---
-        # 1. Calculate Mean Difference
-        h_data = ensure_numpy_float32(harmful_outputs)
-        b_data = ensure_numpy_float32(benign_outputs)
-        diff_mean = np.mean(h_data, axis=0) - np.mean(b_data, axis=0)
-
-        # 2. Select Top Neurons using Fisher Score (via analyze_safety_neurons)
-        ratio = getattr(hparams, 'neuron_ratio', 0.05)
-        top_k = int(h_data.shape[-1] * ratio)
-        
-        # We use the existing analysis function to get robust indices
-        results = analyze_safety_neurons(harmful_outputs, benign_outputs, top_k=top_k)
-        selected_indices = results['indices']['fisher'] # Using Fisher as primary metric
-
-        # 3. Categorize into Act/Deact based on direction
-        # Act: Harmful > Benign (diff > 0)
-        # Deact: Benign > Harmful (diff < 0)
-        pos_mask = diff_mean[selected_indices] > 0
-        neg_mask = diff_mean[selected_indices] < 0
-        
-        act_indices = selected_indices[pos_mask]
-        deact_indices = selected_indices[neg_mask]
-
-        # 4. Store in Dictionary
-        layers_actfn_dict[layer]["act_key"] = torch.tensor(act_indices, dtype=torch.long)
-        layers_actfn_dict[layer]["act_value"] = torch.tensor(diff_mean[act_indices], dtype=torch.float16)
-        
-        layers_actfn_dict[layer]["deact_key"] = torch.tensor(deact_indices, dtype=torch.long)
-        layers_actfn_dict[layer]["deact_value"] = torch.tensor(diff_mean[deact_indices], dtype=torch.float16)
-        
-        # layers_direction_delta[layer] = torch.tensor(diff_mean, dtype=torch.float16)
-
-    # Save results
-    if not os.path.exists(model_dir):
-        os.makedirs(model_dir, exist_ok=True)
-        
-    torch.save(layers_actfn_dict, f"{model_dir}/layers_actfn_dict.pt")
-    # torch.save(layers_direction_delta, f"{model_dir}/layers_direction_delta.pt")
-    print(f"Results saved to {model_dir}")
-
-    return layers_actfn_dict
 
